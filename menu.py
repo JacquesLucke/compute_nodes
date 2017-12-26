@@ -7,6 +7,8 @@ def drawMenu(self, context):
     layout = self.layout
     layout.operator_context = "INVOKE_DEFAULT"
     insertNode(layout, "cn_MathNode", "Math")
+    insertNode(layout, "cn_InputNode", "Input")
+    insertNode(layout, "cn_OutputNode", "Output")
 
 def insertNode(layout, type, text, settings = {}, icon = "NONE"):
     operator = layout.operator("node.add_node", text = text, icon = icon)

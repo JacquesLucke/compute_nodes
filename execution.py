@@ -10,10 +10,10 @@ class TreeExecutionData:
     def __init__(self, tree):
         self.tree_hash = hash(tree)
 
-        llvm_target = llvm.Target.from_default_triple()
-        llvm_target_machine = llvm_target.create_target_machine()
         empty_module = llvm.parse_assembly("")
-        self.engine = llvm.create_mcjit_compiler(empty_module, llvm_target_machine)
+        llvm_target = llvm.Target.from_default_triple()
+        self.target_machine = llvm_target.create_target_machine()
+        self.engine = llvm.create_mcjit_compiler(empty_module, self.target_machine)
 
         self.globals_module_ir = self._create_globals_module(tree)
         self.globals_module = self._compile_ir_module(self.globals_module_ir)
@@ -25,6 +25,13 @@ class TreeExecutionData:
         module.verify()
         self.engine.add_module(module)
         self.engine.finalize_object()
+
+        pmb = llvm.PassManagerBuilder()
+        pmb.opt_level = 0
+        pm = llvm.ModulePassManager()
+        pmb.populate(pm)
+        pm.run(module)
+
         return module
 
     def _create_globals_module(self, tree):
@@ -35,32 +42,17 @@ class TreeExecutionData:
             variable.linkage = "internal"
         return module
 
-    def get_compute_module(self, output_socket):
-        socket_hash = hash(output_socket)
+    def get_compute_module(self, output_sockets):
+        socket_hash = hash(tuple(output_sockets))
         if socket_hash not in self.compute_modules:
-            module_ir = self._create_compute_module(output_socket)
+            module_ir = self._create_compute_module(output_sockets)
             module = self._compile_ir_module(module_ir)
             self.compute_modules[socket_hash] = module
 
         return self.compute_modules[socket_hash]
 
-    def _create_compute_module(self, output_socket):
-        tree = self.get_tree()
-        if output_socket.id_data != tree:
-            raise Exception("output socket is in wrong tree")
-
-        module_name = "ID1".format(output_socket.node.name, output_socket.identifier)
-
-        module = ir.Module(module_name)
-        self.node_functions = {}
-        for node in iter_compute_nodes_in_tree(tree):
-            f = create_node_function(module, node)
-            self.node_functions[node.name] = f
-
-        main_type = ir.FunctionType(output_socket.ir_type, tuple())
-        main_function = ir.Function(module, main_type, name = "Main " + output_socket.node.name + " " + output_socket.identifier)
-
-        create_main_code(main_function, self.globals_module_ir, tree, output_socket, self.node_functions)
+    def _create_compute_module(self, output_sockets):
+        module = generate_compute_module(output_sockets)
         print(module)
         return module
 
@@ -82,30 +74,6 @@ def iter_all_unlinked_inputs(tree):
         for socket in iter_unlinked_inputs(node):
             yield node, socket
 
-def create_node_function(module, node):
-    input_types = list(iter_input_socket_types(node))
-    output_types = list(iter_output_socket_pointer_types(node))
-
-    function_type = ir.FunctionType(ir.VoidType(), input_types + output_types)
-    function = ir.Function(module, function_type, name = node.name)
-
-    input_args = function.args[:len(input_types)]
-    output_args = function.args[len(input_types):]
-
-
-    block_calc = function.append_basic_block("calculate")
-    builder_calc = ir.IRBuilder(block_calc)
-    output_variables = node.create_llvm_ir(builder_calc, *input_args)
-
-    block_store = function.append_basic_block("store_output")
-    builder_calc.branch(block_store)
-    builder_store = ir.IRBuilder(block_store)
-    for var, arg in zip(output_variables, output_args):
-        builder_store.store(var, arg)
-    builder_store.ret_void()
-
-    return function
-
 def iter_input_socket_types(node):
     for socket in node.inputs:
         yield socket.ir_type
@@ -115,7 +83,7 @@ def iter_output_socket_pointer_types(node):
         yield socket.ir_type.as_pointer()
 
 
-def create_main_code(function, globals_module, tree, output_socket, functions):
+def create_main_code(function, globals_module, tree, output_socket):
     node_by_name = dict(tree.nodes)
     nodes = list(iter_dependency_nodes(output_socket.node, node_by_name))
     variables = {}
@@ -127,14 +95,16 @@ def create_main_code(function, globals_module, tree, output_socket, functions):
         for socket in iter_linked_inputs(node):
             origin = get_data_origin_socket(socket)
             variables[socket] = variables[origin]
+
         input_parameters = [variables[socket] for socket in node.inputs]
-        output_parameters = [builder.alloca(socket.ir_type) for socket in node.outputs]
-        builder.call(functions[node.name], input_parameters + output_parameters)
-        for i, socket in enumerate(node.outputs):
-            variables[socket] = builder.load(output_parameters[i])
+        next_block, *outputs = node.create_llvm_ir(builder, *input_parameters)
+        for socket, variable in zip(node.outputs, outputs):
+            variables[socket] = variable
+
+        print("BLOCK", next_block)
+        builder = ir.IRBuilder(next_block)
 
     builder.ret(variables[output_socket])
-    pprint(variables)
 
 def iter_dependency_nodes(node, node_by_name, visited = None):
     if visited is None:
@@ -163,3 +133,64 @@ def get_global_input_name(node, socket):
 
 def validify_name(name):
     return name.replace('"', "")
+
+
+def generate_compute_module(required_sockets):
+    module_name = "My Module"
+    module = ir.Module(module_name)
+
+    output_type = ir.LiteralStructType([s.ir_type for s in required_sockets])
+    function_type = ir.FunctionType(output_type, tuple())
+    function = ir.Function(module, function_type, name = "Main")
+    block = function.append_basic_block("entry")
+    builder = ir.IRBuilder(block)
+
+    input_values = {}
+    tree = required_sockets[0].id_data
+    for node in tree.nodes:
+        for socket in iter_unlinked_inputs(node):
+            name = get_global_input_name(node, socket)
+            source_variable = ir.GlobalVariable(module, socket.ir_type, name)
+            source_variable.linkage = "available_externally"
+            variable = builder.load(source_variable)
+            input_values[socket] = variable
+
+    outputs = generate_function_code(builder, input_values, required_sockets)
+    out = builder.load(builder.alloca(output_type, name = "output"))
+    for i, variable in enumerate(outputs):
+        out = builder.insert_value(out, variable, i)
+    builder.ret(out)
+
+    return module
+
+
+def generate_function_code(builder, unlinked_input_values, required_sockets):
+    variables = dict()
+    variables.update(unlinked_input_values)
+
+    for socket in required_sockets:
+        builder = insert_code_to_calculate_socket(socket, builder, variables)
+
+    outputs = [variables[s] for s in required_sockets]
+    return outputs
+
+def insert_code_to_calculate_socket(socket, builder, variables):
+    if socket in variables:
+        return builder
+
+    if socket.is_output:
+        node = socket.node
+        for input_socket in node.inputs:
+            builder = insert_code_to_calculate_socket(input_socket, builder, variables)
+
+        node_input_values = [variables[s] for s in node.inputs]
+        builder, *node_output_values = node.create_llvm_ir(builder, *node_input_values)
+
+        for s, value in zip(node.outputs, node_output_values):
+            variables[s] = value
+    else:
+        origin_socket = get_data_origin_socket(socket)
+        builder = insert_code_to_calculate_socket(origin_socket, builder, variables)
+        variables[socket] = variables[origin_socket]
+
+    return builder

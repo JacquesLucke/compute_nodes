@@ -12,4 +12,5 @@ class MathNode(bpy.types.Node, ComputeNode):
         self.outputs.new("cn_FloatSocket", "Result", "result")
 
     def create_llvm_ir(self, builder, a, b):
-        return [builder.fadd(a, b, name = "result")]
+        res = builder.fadd(a, b, name = "result")
+        return builder, res
