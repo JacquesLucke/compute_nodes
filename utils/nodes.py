@@ -1,5 +1,11 @@
 import bpy
 from .. compute_node import ComputeNode
+from .. node_base import NodeBase
+
+def iter_base_nodes_in_tree(tree):
+    for node in tree.nodes:
+        if isinstance(node, NodeBase):
+            yield node
 
 def iter_compute_nodes_in_tree(tree):
     for node in tree.nodes:

@@ -1,7 +1,7 @@
 from llvmlite import ir
 import llvmlite.binding as llvm
 from . utils.timing import measureTime
-from . utils.nodes import iter_compute_nodes_in_tree, iter_compute_node_trees
+from . utils.nodes import iter_base_nodes_in_tree, iter_compute_node_trees
 from . tree_info import get_direct_dependency_node_names, iter_unlinked_inputs, iter_linked_inputs, get_data_origin_socket
 from pprint import pprint
 
@@ -42,17 +42,16 @@ class TreeExecutionData:
             variable.linkage = "internal"
         return module
 
-    def get_compute_module(self, output_sockets):
-        socket_hash = hash(tuple(output_sockets))
-        if socket_hash not in self.compute_modules:
-            module_ir = self._create_compute_module(output_sockets)
-            module = self._compile_ir_module(module_ir)
-            self.compute_modules[socket_hash] = module
+    def get_compute_module(self):
+        module_ir = self._create_compute_module()
+        module = self._compile_ir_module(module_ir)
+        return module
 
-        return self.compute_modules[socket_hash]
-
-    def _create_compute_module(self, output_sockets):
-        module = generate_compute_module(output_sockets)
+    def _create_compute_module(self):
+        tree = self.get_tree()
+        inputs = list(getattr(getInputNode(tree), "outputs", []))
+        outputs = list(getattr(getOutputNode(tree), "inputs", []))
+        module = generate_compute_module(inputs, outputs)
         print(module)
         return module
 
@@ -70,7 +69,7 @@ class TreeExecutionData:
             socket.update_at_address(address)
 
 def iter_all_unlinked_inputs(tree):
-    for node in iter_compute_nodes_in_tree(tree):
+    for node in iter_base_nodes_in_tree(tree):
         for socket in iter_unlinked_inputs(node):
             yield node, socket
 
@@ -83,51 +82,6 @@ def iter_output_socket_pointer_types(node):
         yield socket.ir_type.as_pointer()
 
 
-def create_main_code(function, globals_module, tree, output_socket):
-    node_by_name = dict(tree.nodes)
-    nodes = list(iter_dependency_nodes(output_socket.node, node_by_name))
-    variables = {}
-    block = function.append_basic_block("entry")
-    builder = ir.IRBuilder(block)
-    create_unlinked_input_variables(builder, nodes, variables)
-
-    for node in nodes:
-        for socket in iter_linked_inputs(node):
-            origin = get_data_origin_socket(socket)
-            variables[socket] = variables[origin]
-
-        input_parameters = [variables[socket] for socket in node.inputs]
-        next_block, *outputs = node.create_llvm_ir(builder, *input_parameters)
-        for socket, variable in zip(node.outputs, outputs):
-            variables[socket] = variable
-
-        print("BLOCK", next_block)
-        builder = ir.IRBuilder(next_block)
-
-    builder.ret(variables[output_socket])
-
-def iter_dependency_nodes(node, node_by_name, visited = None):
-    if visited is None:
-        visited = set()
-
-    for name in get_direct_dependency_node_names(node):
-        dependency_node = node_by_name[name]
-        if dependency_node not in visited:
-            yield from iter_dependency_nodes(dependency_node, node_by_name, visited)
-
-    visited.add(node)
-    yield node
-
-def create_unlinked_input_variables(builder, nodes, variables):
-    for node in nodes:
-        for socket in iter_unlinked_inputs(node):
-            name = get_global_input_name(node, socket)
-            source_variable = ir.GlobalVariable(builder.block.function.module, socket.ir_type, name)
-            source_variable.linkage = "available_externally"
-            variable = builder.load(source_variable)
-            variables[socket] = variable
-
-
 def get_global_input_name(node, socket):
     return validify_name(node.name) + " - " + validify_name(socket.identifier)
 
@@ -135,18 +89,34 @@ def validify_name(name):
     return name.replace('"', "")
 
 
-def generate_compute_module(required_sockets):
+def getOutputNode(tree):
+    return getNodeByType(tree, "cn_OutputNode")
+
+def getInputNode(tree):
+    return getNodeByType(tree, "cn_InputNode")
+
+def getNodeByType(tree, idname):
+    for node in tree.nodes:
+        if node.bl_idname == idname:
+            return node
+
+
+def generate_compute_module(input_sockets, output_sockets):
+    assert len(output_sockets) > 0
+
     module_name = "My Module"
     module = ir.Module(module_name)
 
-    output_type = ir.LiteralStructType([s.ir_type for s in required_sockets])
-    function_type = ir.FunctionType(output_type, tuple())
+    input_types = [s.ir_type for s in input_sockets]
+    output_type = ir.LiteralStructType([s.ir_type for s in output_sockets])
+    function_type = ir.FunctionType(output_type, input_types)
+
     function = ir.Function(module, function_type, name = "Main")
     block = function.append_basic_block("entry")
     builder = ir.IRBuilder(block)
 
     input_values = {}
-    tree = required_sockets[0].id_data
+    tree = output_sockets[0].id_data
     for node in tree.nodes:
         for socket in iter_unlinked_inputs(node):
             name = get_global_input_name(node, socket)
@@ -155,7 +125,10 @@ def generate_compute_module(required_sockets):
             variable = builder.load(source_variable)
             input_values[socket] = variable
 
-    outputs = generate_function_code(builder, input_values, required_sockets)
+    for socket, variable in zip(input_sockets, function.args):
+        input_values[socket] = variable
+
+    outputs = generate_function_code(builder, input_values, output_sockets)
     out = builder.load(builder.alloca(output_type, name = "output"))
     for i, variable in enumerate(outputs):
         out = builder.insert_value(out, variable, i)
