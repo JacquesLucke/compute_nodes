@@ -4,15 +4,7 @@ import sys
 import inspect
 import pkgutil
 import importlib
-
-base_classes_to_register = (
-    bpy.types.Panel,
-    bpy.types.Menu,
-    bpy.types.Node,
-    bpy.types.NodeTree,
-    bpy.types.NodeSocket,
-    bpy.types.Operator
-)
+import bpy_types
 
 def setup_addon_modules(path, package_name, reload):
     """
@@ -42,19 +34,17 @@ def setup_addon_modules(path, package_name, reload):
         for module in modules:
             importlib.reload(module)
 
-    def iter_classes_to_register(modules):
-        for module in modules:
-            for attribute in dir(module):
-                value = getattr(module, attribute)
-                if inspect.isclass(value):
-                    if issubclass(value, base_classes_to_register):
-                        yield value
+    def iter_classes_to_register():
+        module_name = os.path.basename(path[0])
+        typemap_list = bpy_types.TypeMap.get(module_name, ())
+        for cls_weakref in typemap_list:
+            yield cls_weakref()
 
     names = list(iter_submodule_names())
     modules = list(import_submodules(names))
     if reload:
         reload_modules(modules)
 
-    classes = list(iter_classes_to_register(modules))
+    classes = list(iter_classes_to_register())
 
     return modules, classes

@@ -7,8 +7,8 @@ from . base_socket import BaseSocket
 
 class FloatSocket(bpy.types.NodeSocket, BaseSocket):
     bl_idname = "cn_FloatSocket"
-    size = 4
     ir_type = ir.FloatType()
+    c_type = c_float
 
     value = FloatProperty(name = "Value")
 
@@ -20,3 +20,6 @@ class FloatSocket(bpy.types.NodeSocket, BaseSocket):
 
     def update_at_address(self, address):
         c_float.from_address(address).value = self.value
+
+    def value_from_cvalue(self, cvalue):
+        return cvalue.value

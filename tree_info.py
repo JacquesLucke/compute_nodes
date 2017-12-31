@@ -1,37 +1,37 @@
-from . utils.nodes import iter_compute_node_trees
+from itertools import chain
 from collections import defaultdict, namedtuple
-
-SocketID = namedtuple("SocketID", ["name", "index"])
+from . utils.nodes import iter_compute_node_trees, iter_base_nodes_in_tree
 
 class TreeInfo:
     def __init__(self, node_tree):
-        nodes = dict(node_tree.nodes)
-        links = list(node_tree.links)
+        self.nodes = dict(node_tree.nodes)
+        self.links = list(node_tree.links)
 
-        self._insert_nodes(node_tree.nodes)
-        self._insert_links(node_tree.links)
+        self._create_nodes_data()
+        self._create_links_data()
         self._find_data_connections()
 
-    def _insert_nodes(self, nodes):
-        self.reroute_nodes = set()
+    def _create_nodes_data(self):
+        self.reroutes = set()
+        self.node_by_socket = dict()
+        self.nodes_by_type = defaultdict(list)
 
-        for name, node in nodes.items():
+        for node in self.nodes.values():
             if node.bl_idname == "NodeReroute":
-                self.reroute_nodes.add(name)
+                self.reroutes.add(name)
 
-    def _insert_links(self, links):
+            for socket in chain(node.inputs, node.outputs):
+                self.node_by_socket[socket] = node
+
+            self.nodes_by_type[node.bl_idname].append(node)
+
+    def _create_links_data(self):
         self.direct_origin = defaultdict(lambda: None)
         self.direct_targets = defaultdict(list)
 
-        for link in links:
-            origin_node = link.from_node
-            target_node = link.to_node
-
-            origin_socket = link.from_socket
-            target_socket = link.to_socket
-
-            origin = SocketID(origin_node.name, list(origin_node.outputs).index(origin_socket))
-            target = SocketID(target_node.name, list(target_node.inputs).index(target_socket))
+        for link in self.links:
+            origin = link.from_socket
+            target = link.to_socket
 
             self.direct_origin[target] = origin
             self.direct_targets[origin].append(target)
@@ -41,7 +41,7 @@ class TreeInfo:
         self.data_targets = defaultdict(list)
 
         for target, origin in self.direct_origin.items():
-            if target.name in self.reroute_nodes:
+            if target in self.reroutes:
                 continue
 
             real_origin = self._find_real_data_origin(target, set())
@@ -54,11 +54,11 @@ class TreeInfo:
         if direct_origin is None:
             return None
 
-        if direct_origin.name in visited_reroutes:
+        if direct_origin in visited_reroutes:
             print("Reroute recursion detected")
             return None
-        elif direct_origin.name in self.reroute_nodes:
-            visited_reroutes.add(direct_origin.name)
+        elif direct_origin in self.reroutes:
+            visited_reroutes.add(direct_origin)
             return self._find_real_data_origin(direct_origin, visited_reroutes)
         else:
             return direct_origin
@@ -71,39 +71,48 @@ def tag_update(tree):
     updated_trees.add(hash(tree))
 
 def update_if_necessary():
+    new_tree_info_by_hash = dict()
     for tree in iter_compute_node_trees():
         tree_hash = hash(tree)
         if tree_hash not in tree_info_by_hash or tree_hash in updated_trees:
-            tree_info_by_hash[tree_hash] = TreeInfo(tree)
+            new_tree_info_by_hash[tree_hash] = TreeInfo(tree)
             updated_trees.discard(tree_hash)
+        else:
+            new_tree_info_by_hash[tree_hash] = tree_info_by_hash[tree_hash]
+
+    tree_info_by_hash.clear()
+    tree_info_by_hash.update(new_tree_info_by_hash)
+
+
 
 
 # Access tree info utilities
 
+def iter_all_unlinked_inputs(tree):
+    for node in iter_base_nodes_in_tree(tree):
+        for socket in iter_unlinked_inputs(node):
+            yield node, socket
+
 def iter_unlinked_inputs(node):
     info = tree_info_by_hash[hash(node.id_data)]
-    for i, socket in enumerate(node.inputs):
-        if info.data_origin[SocketID(node.name, i)] is None:
+    for socket in node.inputs:
+        if info.data_origin[socket] is None:
             yield socket
 
 def iter_linked_inputs(node):
     info = tree_info_by_hash[hash(node.id_data)]
-    for i, socket in enumerate(node.inputs):
-        if info.data_origin[SocketID(node.name, i)] is not None:
+    for socket in node.inputs:
+        if info.data_origin[socket] is not None:
             yield socket
 
 def get_data_origin_socket(socket):
-    tree = socket.id_data
-    info = tree_info_by_hash[hash(tree)]
-    origin = info.data_origin[SocketID(socket.node.name, list(socket.node.inputs).index(socket))]
-    if origin is not None:
-        return tree.nodes[origin.name].outputs[origin.index]
+    info = tree_info_by_hash[hash(socket.id_data)]
+    return info.data_origin[socket]
 
-def get_direct_dependency_node_names(node):
-    info = tree_info_by_hash[hash(node.id_data)]
-    names = set()
-    for i in range(len(node.inputs)):
-        origin = info.data_origin[SocketID(node.name, i)]
-        if origin is not None:
-            names.add(origin.name)
-    return names
+def get_nodes_by_type(tree, idname):
+    info = tree_info_by_hash[hash(tree)]
+    return info.nodes_by_type[idname]
+
+def get_node_by_socket(socket):
+    info = tree_info_by_hash[hash(socket.id_data)]
+    return info.node_by_socket[socket]

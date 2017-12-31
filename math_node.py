@@ -2,9 +2,9 @@ import bpy
 from llvmlite import ir
 from . compute_node import ComputeNode
 
-class MathNode(bpy.types.Node, ComputeNode):
-    bl_idname = "cn_MathNode"
-    bl_label = "Math Node"
+class FloatMathNode(bpy.types.Node, ComputeNode):
+    bl_idname = "cn_FloatMathNode"
+    bl_label = "Float Math"
 
     def init(self, context):
         self.inputs.new("cn_FloatSocket", "A", "a")

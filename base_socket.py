@@ -1,5 +1,4 @@
 class BaseSocket:
-    size = NotImplemented
     ir_type = NotImplemented
 
     def update_at_address(self, address):
