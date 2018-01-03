@@ -49,7 +49,7 @@ class TreeExecutionData:
         self.engine.finalize_object()
 
         pmb = llvm.PassManagerBuilder()
-        pmb.opt_level = 1
+        pmb.opt_level = 0
         pm = llvm.ModulePassManager()
         pmb.populate(pm)
         #pm.add_dead_code_elimination_pass()

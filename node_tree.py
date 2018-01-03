@@ -28,6 +28,6 @@ class ComputeNodeTree(bpy.types.NodeTree):
         self.ensure_execution_data()
         execution_data_by_hash[hash(self)].print_modules()
 
-    def print_module_assembly(self):
+    def print_assembly(self):
         self.ensure_execution_data()
         execution_data_by_hash[hash(self)].print_module_assembly()
