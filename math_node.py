@@ -7,7 +7,8 @@ operation_items = [
     ("ADD", "Add", "", "NONE", 0),
     ("SUBTRACT", "Subtract", "", "NONE", 1),
     ("MULTIPLY", "Multiply", "", "NONE", 2),
-    ("DIVIDE", "Divide", "", "NONE", 3)
+    ("DIVIDE", "Divide", "", "NONE", 3),
+    ("SIN", "Sin", "", "NONE", 4)
 ]
 
 class FloatMathNode(bpy.types.Node, ComputeNode):
@@ -31,6 +32,7 @@ class FloatMathNode(bpy.types.Node, ComputeNode):
         op = self.operation
         out_name = "result"
 
+        zero = ir.Constant(ir.FloatType(), 0)
         if op == "ADD":
             result = builder.fadd(a, b, name = out_name)
         elif op == "SUBTRACT":
@@ -38,7 +40,6 @@ class FloatMathNode(bpy.types.Node, ComputeNode):
         elif op == "MULTIPLY":
             result = builder.fmul(a, b, name = out_name)
         elif op == "DIVIDE":
-            zero = ir.Constant(ir.FloatType(), 0)
             is_not_zero = builder.fcmp_ordered("!=", b, zero, name = "is_not_zero")
             with builder.if_else(is_not_zero) as (then, otherwise):
                 with then:
@@ -51,5 +52,9 @@ class FloatMathNode(bpy.types.Node, ComputeNode):
             result = builder.phi(ir.FloatType(), name = out_name)
             result.add_incoming(normal_result, then_block)
             result.add_incoming(zero_result, else_block)
+        elif op == "SIN":
+            f_type = ir.FunctionType(ir.FloatType(), [ir.FloatType()])
+            f = ir.Function(builder.module, f_type, "llvm.sin.f32")
+            result = builder.call(f, [a], name = out_name)
 
         return builder, result
