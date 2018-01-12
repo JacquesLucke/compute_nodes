@@ -9,6 +9,7 @@ def drawMenu(self, context):
     insertNode(layout, "cn_FloatMathNode", "Math")
     insertNode(layout, "cn_CombineVectorNode", "Combine Vector")
     insertNode(layout, "cn_SeparateVectorNode", "Separate Vector")
+    insertNode(layout, "cn_ObjectTransformsNode", "Object Transforms")
     insertNode(layout, "cn_InputNode", "Input")
     insertNode(layout, "cn_OutputNode", "Output")
 

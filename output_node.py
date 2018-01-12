@@ -8,3 +8,4 @@ class OutputNode(bpy.types.Node, NodeBase):
     def init(self, context):
         self.inputs.new("cn_FloatSocket", "Output 1", "out1")
         self.inputs.new("cn_VectorSocket", "Output 2", "out2")
+        self.inputs.new("cn_ObjectSocket", "Output 3", "out3")
